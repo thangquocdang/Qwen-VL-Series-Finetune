@@ -59,6 +59,7 @@ All training scripts have been updated with reproducibility support:
 1. **Resume logic**: Now respects `--resume_from_checkpoint` argument (priority over auto-detection)
 2. **Checkpoint structure**: No longer copies checkpoint incorrectly
 3. **Seed consistency**: Both `seed` and `data_seed` are set for resumed training
+4. **Optimizer state incompatibility**: Handles incremental unfreezing by loading weights only (skip optimizer state)
 
 ### How Resume Works
 
@@ -67,20 +68,46 @@ All training scripts have been updated with reproducibility support:
 2. Otherwise, auto-detect latest `checkpoint-*` in `--output_dir`
 3. If no checkpoint found → train from scratch
 
+**Resume modes** (automatic detection):
+
+**Full State Resume** (default):
+- Used when trainable parameters don't change
+- Loads: model weights + optimizer state + scheduler state + RNG states
+- Example: Resume same phase after interruption
+- Maintains exact training state
+
+**Weights-Only Resume** (incremental unfreezing):
+- Used when `unfreeze_topk_llm > 0` or `unfreeze_topk_vision > 0`
+- Used when `freeze_llm=False` (Phase 2)
+- Loads: LoRA adapter + merger weights ONLY
+- Skips: optimizer/scheduler state (incompatible sizes)
+- Example: Phase 1 → Phase 2a with `unfreeze_topk_llm=6`
+- Fresh optimizer initialized with new trainable params
+
+**Why weights-only for incremental unfreezing?**
+
+Optimizer state (Adam momentum/variance) is sized for trainable parameters:
+- Phase 1: 221M params → optimizer state for 221M params
+- Phase 2a: 502M params → needs optimizer state for 502M params
+- Incompatible! Must start optimizer fresh
+
 **Example** (Phase 2a):
 ```bash
 RESUME_FROM="/kaggle/working/checkpoints/zac_qwen2vl_lora/checkpoint-latest"
 OUTPUT_DIR="/kaggle/working/checkpoints/zac_qwen2vl_phase2a"
 
 # Training will:
-# 1. Resume from RESUME_FROM checkpoint
-# 2. Save new checkpoints to OUTPUT_DIR
-# 3. Maintain reproducibility with same seeds
+# 1. Detect unfreeze_topk_llm=6 → weights-only resume
+# 2. Load LoRA adapter + merger from RESUME_FROM
+# 3. Skip optimizer state (incompatible)
+# 4. Initialize fresh optimizer for new param set
+# 5. Save new checkpoints to OUTPUT_DIR
 deepspeed src/train/train_sft.py \
     --resume_from_checkpoint "$RESUME_FROM" \
     --output_dir "$OUTPUT_DIR" \
     --seed 42 \
     --data_seed 42 \
+    --unfreeze_topk_llm 6 \  # ← Triggers weights-only resume
     # ...
 ```
 
