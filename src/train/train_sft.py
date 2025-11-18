@@ -469,22 +469,57 @@ def train():
 
         # Load LoRA adapter weights if using weights-only resume
         if weights_only_resume and training_args.lora_enable:
-            adapter_path = pathlib.Path(resume_checkpoint) / "adapter_model.safetensors"
-            if adapter_path.exists():
-                rank0_print(f"Loading LoRA adapter weights from {adapter_path}")
+            adapter_config_path = pathlib.Path(resume_checkpoint) / "adapter_config.json"
+            if adapter_config_path.exists():
+                rank0_print(f"Loading LoRA adapter weights from {resume_checkpoint}")
+                # Use PEFT's proper API to load adapter weights
+                from peft import set_peft_model_state_dict
                 from safetensors.torch import load_file
-                adapter_weights = load_file(str(adapter_path))
 
-                # Load adapter weights into PEFT model
-                # The keys in adapter_weights already have "base_model.model." prefix
-                missing, unexpected = model.load_state_dict(adapter_weights, strict=False)
-                rank0_print(f"✓ Loaded {len(adapter_weights)} LoRA adapter parameters")
-                if missing:
-                    rank0_print(f"  Missing keys: {len(missing)} (expected if unfreezing new layers)")
-                if unexpected:
-                    rank0_print(f"  Unexpected keys: {len(unexpected)}")
+                adapter_path = pathlib.Path(resume_checkpoint) / "adapter_model.safetensors"
+                if adapter_path.exists():
+                    adapter_weights = load_file(str(adapter_path))
+                    # PEFT expects state dict without "base_model.model." prefix
+                    set_peft_model_state_dict(model, adapter_weights)
+                    rank0_print(f"✓ Loaded LoRA adapter with {len(adapter_weights)} parameters")
+
+                    # Re-enable LoRA parameters (they may be frozen after loading)
+                    rank0_print("Re-enabling LoRA parameters after loading...")
+                    for name, param in model.named_parameters():
+                        if 'lora_' in name:
+                            param.requires_grad = True
+
+                    # Re-apply incremental unfreezing if needed
+                    if training_args.unfreeze_topk_llm > 0:
+                        rank0_print(f"Re-applying incremental unfreezing for top {training_args.unfreeze_topk_llm} LLM layers...")
+                        unfreeze_topk_layers(model, k_llm=training_args.unfreeze_topk_llm, k_vis=0)
+
+                    # Ensure merger stays trainable
+                    if not training_args.freeze_merger:
+                        rank0_print("Re-enabling merger parameters...")
+                        merger_params = model.visual.merger.parameters()
+                        for p in merger_params:
+                            p.requires_grad = True
+                        if hasattr(model.visual, "deepstack_merger_list"):
+                            for p in model.visual.deepstack_merger_list.parameters():
+                                p.requires_grad = True
+
+                else:
+                    rank0_print(f"WARNING: LoRA adapter file not found at {adapter_path}")
             else:
-                rank0_print(f"WARNING: LoRA adapter not found at {adapter_path}")
+                rank0_print(f"WARNING: LoRA adapter config not found at {adapter_config_path}")
+
+        # Verify trainable parameters after loading
+        if weights_only_resume:
+            trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            rank0_print(f"Verified: {trainable_count:,} trainable parameters after loading weights")
+
+            # Sample some trainable param names
+            trainable_names = [name for name, p in model.named_parameters() if p.requires_grad]
+            if trainable_names:
+                rank0_print(f"Sample trainable params: {trainable_names[:5]}")
+            else:
+                rank0_print("⚠️  WARNING: NO trainable parameters found! This will cause training to fail.")
 
         # Resume training
         if weights_only_resume:
