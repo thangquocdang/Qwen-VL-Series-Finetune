@@ -408,16 +408,33 @@ def train():
         **data_module
     )
 
-    # Check for existing checkpoints
-    checkpoints = sorted(pathlib.Path(training_args.output_dir).glob("checkpoint-*"),
-                        key=lambda x: int(x.name.split("-")[1]))
+    # Determine checkpoint to resume from
+    # Priority: 1) --resume_from_checkpoint arg, 2) auto-detect in output_dir
+    resume_checkpoint = None
 
-    if checkpoints:
-        latest_checkpoint = str(checkpoints[-1])
-        rank0_print(f"Resuming from checkpoint: {latest_checkpoint}")
+    if training_args.resume_from_checkpoint is not None:
+        # User explicitly provided checkpoint path
+        resume_checkpoint = training_args.resume_from_checkpoint
+        if not pathlib.Path(resume_checkpoint).exists():
+            rank0_print(f"WARNING: --resume_from_checkpoint path does not exist: {resume_checkpoint}")
+            resume_checkpoint = None
+        else:
+            rank0_print(f"Using --resume_from_checkpoint: {resume_checkpoint}")
+
+    if resume_checkpoint is None:
+        # Auto-detect latest checkpoint in output_dir
+        checkpoints = sorted(pathlib.Path(training_args.output_dir).glob("checkpoint-*"),
+                            key=lambda x: int(x.name.split("-")[1]) if x.name.split("-")[1].isdigit() else 0)
+        if checkpoints:
+            resume_checkpoint = str(checkpoints[-1])
+            rank0_print(f"Auto-detected checkpoint in output_dir: {resume_checkpoint}")
+
+    # Resume training if checkpoint found
+    if resume_checkpoint:
+        rank0_print(f"Resuming training from: {resume_checkpoint}")
 
         # Load merger weights if they exist
-        merger_weights_path = pathlib.Path(latest_checkpoint) / "merger_weights.bin"
+        merger_weights_path = pathlib.Path(resume_checkpoint) / "merger_weights.bin"
         if merger_weights_path.exists() and not training_args.freeze_merger:
             rank0_print(f"Loading merger weights from {merger_weights_path}")
             merger_weights = torch.load(merger_weights_path, map_location="cpu")
@@ -435,8 +452,9 @@ def train():
             else:
                 rank0_print(f"Successfully loaded {len(merger_weights)} merger parameters")
 
-        trainer.train(resume_from_checkpoint=latest_checkpoint)
+        trainer.train(resume_from_checkpoint=resume_checkpoint)
     else:
+        rank0_print("Starting training from scratch (no checkpoint found)")
         trainer.train()
 
     trainer.save_state()

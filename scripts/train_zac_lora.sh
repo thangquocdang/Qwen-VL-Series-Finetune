@@ -29,6 +29,8 @@ deepspeed src/train/train_sft.py \
     --use_liger True \
     --deepspeed scripts/zero2.json \
     --model_id $MODEL_NAME \
+    --seed 42 \
+    --data_seed 42 \
     --data_path /content/zac_llava_format.json \
     --image_folder /content/traffic_buddy_train+public_test \
     --remove_unused_columns False \
