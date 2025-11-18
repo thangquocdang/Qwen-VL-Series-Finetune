@@ -433,6 +433,21 @@ def train():
     if resume_checkpoint:
         rank0_print(f"Resuming training from: {resume_checkpoint}")
 
+        # Check if we're changing trainable parameters (incremental unfreezing)
+        # If so, we can't resume optimizer state (incompatible sizes)
+        weights_only_resume = False
+        if training_args.unfreeze_topk_llm > 0 or training_args.unfreeze_topk_vision > 0:
+            rank0_print("⚠️  Detected incremental unfreezing (unfreeze_topk_llm/vision > 0)")
+            rank0_print("   → Loading model weights only (LoRA + merger)")
+            rank0_print("   → Skipping optimizer/scheduler state (incompatible with new trainable params)")
+            weights_only_resume = True
+        elif not training_args.freeze_llm:
+            # Check if checkpoint has different freeze_llm setting
+            # This is a heuristic - if freeze_llm=False but checkpoint likely had freeze_llm=True
+            rank0_print("⚠️  freeze_llm=False: May be resuming from checkpoint with different trainable params")
+            rank0_print("   → Loading model weights only to avoid optimizer state mismatch")
+            weights_only_resume = True
+
         # Load merger weights if they exist
         merger_weights_path = pathlib.Path(resume_checkpoint) / "merger_weights.bin"
         if merger_weights_path.exists() and not training_args.freeze_merger:
@@ -452,7 +467,32 @@ def train():
             else:
                 rank0_print(f"Successfully loaded {len(merger_weights)} merger parameters")
 
-        trainer.train(resume_from_checkpoint=resume_checkpoint)
+        # Load LoRA adapter weights if using weights-only resume
+        if weights_only_resume and training_args.lora_enable:
+            adapter_path = pathlib.Path(resume_checkpoint) / "adapter_model.safetensors"
+            if adapter_path.exists():
+                rank0_print(f"Loading LoRA adapter weights from {adapter_path}")
+                from safetensors.torch import load_file
+                adapter_weights = load_file(str(adapter_path))
+
+                # Load adapter weights into PEFT model
+                # The keys in adapter_weights already have "base_model.model." prefix
+                missing, unexpected = model.load_state_dict(adapter_weights, strict=False)
+                rank0_print(f"✓ Loaded {len(adapter_weights)} LoRA adapter parameters")
+                if missing:
+                    rank0_print(f"  Missing keys: {len(missing)} (expected if unfreezing new layers)")
+                if unexpected:
+                    rank0_print(f"  Unexpected keys: {len(unexpected)}")
+            else:
+                rank0_print(f"WARNING: LoRA adapter not found at {adapter_path}")
+
+        # Resume training
+        if weights_only_resume:
+            rank0_print("Starting training with loaded weights (fresh optimizer state)")
+            trainer.train()  # Don't pass resume_from_checkpoint to avoid loading optimizer
+        else:
+            rank0_print("Resuming training with full state (optimizer + scheduler + RNG)")
+            trainer.train(resume_from_checkpoint=resume_checkpoint)
     else:
         rank0_print("Starting training from scratch (no checkpoint found)")
         trainer.train()
