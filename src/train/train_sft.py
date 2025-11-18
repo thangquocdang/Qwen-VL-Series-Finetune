@@ -1,12 +1,14 @@
 import os
 import torch
+import random
+import numpy as np
 from peft import LoraConfig, get_peft_model
 import ast
 from transformers import (
     AutoProcessor,
-    BitsAndBytesConfig, 
-    Qwen2VLForConditionalGeneration, 
-    HfArgumentParser, 
+    BitsAndBytesConfig,
+    Qwen2VLForConditionalGeneration,
+    HfArgumentParser,
     Qwen2_5_VLForConditionalGeneration,
     Qwen3VLForConditionalGeneration,
     Qwen3VLMoeForConditionalGeneration
@@ -29,6 +31,36 @@ local_rank = None
 def rank0_print(*args):
     if local_rank == 0 or local_rank == '0' or local_rank is None:
         print(*args)
+
+def set_seed(seed: int):
+    """
+    Set random seeds for reproducibility across all libraries.
+
+    Args:
+        seed: Random seed value (default from HF TrainingArguments is 42)
+    """
+    rank0_print(f"Setting all random seeds to {seed} for reproducibility...")
+
+    # Python random module
+    random.seed(seed)
+
+    # NumPy
+    np.random.seed(seed)
+
+    # PyTorch CPU
+    torch.manual_seed(seed)
+
+    # PyTorch CUDA (all GPUs)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+    # CuDNN settings for reproducibility
+    # Note: Setting deterministic=True may impact performance
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    rank0_print("✓ All random seeds set successfully")
 
 def find_target_linear_names(model, num_lora_modules=-1, lora_namespan_exclude=[], verbose=True):
     linear_cls = torch.nn.modules.Linear
@@ -84,6 +116,61 @@ def unfreeze_topk_layers(model, k_llm: int = 0, k_vis: int = 0):
             for p in blk.parameters():
                 p.requires_grad = True
 
+def print_trainable_parameters(model):
+    """
+    Prints the number of trainable parameters in the model with detailed breakdown.
+    """
+    trainable_params = 0
+    all_param = 0
+    trainable_param_names = []
+
+    # Breakdown by category
+    lora_params = 0
+    merger_params = 0
+    llm_base_params = 0
+    vision_params = 0
+    other_params = 0
+
+    for name, param in model.named_parameters():
+        all_param += param.numel()
+        if param.requires_grad:
+            trainable_params += param.numel()
+            trainable_param_names.append(name)
+
+            # Categorize
+            if "lora_" in name:
+                lora_params += param.numel()
+            elif "merger" in name:
+                merger_params += param.numel()
+            elif "language_model" in name or "lm_head" in name:
+                llm_base_params += param.numel()
+            elif "visual" in name:
+                vision_params += param.numel()
+            else:
+                other_params += param.numel()
+
+    rank0_print("=" * 50)
+    rank0_print(
+        f"trainable params: {trainable_params:,} || all params: {all_param:,} || trainable%: {100 * trainable_params / all_param:.2f}"
+    )
+
+    # Print breakdown
+    if trainable_params > 0:
+        rank0_print("\nTrainable parameters breakdown:")
+        rank0_print(f"  LoRA adapters: {lora_params:,} ({100 * lora_params / trainable_params:.1f}%)")
+        rank0_print(f"  Merger layers: {merger_params:,} ({100 * merger_params / trainable_params:.1f}%)")
+        rank0_print(f"  LLM base (non-LoRA): {llm_base_params:,} ({100 * llm_base_params / trainable_params:.1f}%)")
+        rank0_print(f"  Vision tower: {vision_params:,} ({100 * vision_params / trainable_params:.1f}%)")
+        if other_params > 0:
+            rank0_print(f"  Other: {other_params:,} ({100 * other_params / trainable_params:.1f}%)")
+        rank0_print(f"\nTrainable parameter names (first 10): {trainable_param_names[:10]}")
+    else:
+        rank0_print("WARNING: No trainable parameters found!")
+        rank0_print("This will result in learning_rate=0.0 and grad_norm=0.0")
+
+    rank0_print("=" * 50)
+    return trainable_params
+
 
 def train():
     global local_rank
@@ -92,6 +179,11 @@ def train():
         (ModelArguments, DataArguments, TrainingArguments))
     
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+
+    # Set all random seeds for reproducibility
+    # HuggingFace TrainingArguments has default seed=42
+    set_seed(training_args.seed)
+
     use_liger = training_args.use_liger
     if "Qwen2.5" in model_args.model_id:
         # monkey patch the vision model
@@ -118,9 +210,6 @@ def train():
     
     if data_args.nframes is not None and data_args.fps is not None:
         raise ValueError("You cannot set both `nframes` and `fps` at the same time. Please set only one of them.")
-
-    if training_args.lora_enable and not training_args.freeze_llm:
-        raise ValueError("If `lora_enable` is True, `freeze_llm` must also be True.")
 
     if not training_args.lora_enable:
         assert not training_args.vision_lora, \
@@ -192,13 +281,13 @@ def train():
         k_vis=getattr(training_args, "unfreeze_topk_vision", 0),
     )
 
+    # Set gradient checkpointing kwargs but DON'T enable_input_require_grads yet
+    # We'll do that after LoRA is applied
     if training_args.gradient_checkpointing:
         if training_args.vision_lora:
             training_args.gradient_checkpointing_kwargs = {"use_reentrant": False}
         else:
             training_args.gradient_checkpointing_kwargs = {"use_reentrant": True}
-        
-        model.enable_input_require_grads()
 
     if training_args.bits in [4,8]:
         model.config.dtype = (torch.float32 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
@@ -222,8 +311,8 @@ def train():
         rank0_print("Adding LoRA to the model...")
         model = get_peft_model(model, peft_config)
 
-        # Peft maodel makes vision tower and merger freezed again.
-        # Configuring fuction could be called here, but sometimes it does not work properly.
+        # Peft model makes vision tower and merger freezed again.
+        # Configuring function could be called here, but sometimes it does not work properly.
         # So I just made it this way.
         # Need to be fixed in the future.
 
@@ -236,6 +325,59 @@ def train():
             for name, param in model.named_parameters():
                 if "merger" in name:
                     param.requires_grad = True
+
+        # Re-unfreeze LLM layers after LoRA application
+        # Priority: if unfreeze_topk_llm > 0, ONLY unfreeze top-k (ignore freeze_llm flag)
+        # Otherwise, respect freeze_llm flag for full unfreezing
+        k_llm = getattr(training_args, "unfreeze_topk_llm", 0)
+
+        if k_llm > 0:
+            # Phase 2a: Incremental unfreezing - ONLY unfreeze top-k layers
+            rank0_print(f"Re-enabling top {k_llm} LLM layers for incremental unfreezing...")
+            # Access the base model through PEFT wrapper
+            base_model = model.base_model if hasattr(model, 'base_model') else model
+            if hasattr(base_model, 'model'):
+                base_model = base_model.model
+
+            if hasattr(base_model, "language_model") and hasattr(base_model.language_model, "layers"):
+                total_layers = len(base_model.language_model.layers)
+                for layer_idx, layer in enumerate(base_model.language_model.layers[-k_llm:]):
+                    actual_idx = total_layers - k_llm + layer_idx
+                    rank0_print(f"  Unfreezing layer {actual_idx}/{total_layers-1}")
+                    for name, p in layer.named_parameters():
+                        if "lora_" not in name:  # Don't touch LoRA adapters
+                            p.requires_grad = True
+        elif not training_args.freeze_llm:
+            # Phase 2: Full unfreezing - unfreeze ALL LLM parameters
+            rank0_print("Re-enabling ALL LLM parameters for Phase 2 training...")
+            for name, param in model.named_parameters():
+                # Unfreeze base LLM parameters (not LoRA adapters)
+                if "language_model" in name or "lm_head" in name:
+                    if "lora_" not in name:  # Don't touch LoRA adapters
+                        param.requires_grad = True
+
+        # Explicitly ensure LoRA parameters are trainable
+        # This is critical - without this, LoRA parameters may not have requires_grad=True
+        rank0_print("Ensuring LoRA parameters are trainable...")
+        for name, param in model.named_parameters():
+            if "lora_" in name:
+                param.requires_grad = True
+
+        # NOW enable input require grads for gradient checkpointing
+        # This must be done AFTER LoRA is applied
+        if training_args.gradient_checkpointing:
+            model.enable_input_require_grads()
+
+        # Print trainable parameters to verify
+        rank0_print("=" * 50)
+        trainable_count = print_trainable_parameters(model)
+        rank0_print("=" * 50)
+
+        if trainable_count == 0:
+            raise ValueError(
+                "No trainable parameters found! This will cause learning_rate=0.0. "
+                "Please check your freeze settings and LoRA configuration."
+            )
 
     processor = AutoProcessor.from_pretrained(model_args.model_id)
 
@@ -266,8 +408,34 @@ def train():
         **data_module
     )
 
-    if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
-        trainer.train(resume_from_checkpoint=True)
+    # Check for existing checkpoints
+    checkpoints = sorted(pathlib.Path(training_args.output_dir).glob("checkpoint-*"),
+                        key=lambda x: int(x.name.split("-")[1]))
+
+    if checkpoints:
+        latest_checkpoint = str(checkpoints[-1])
+        rank0_print(f"Resuming from checkpoint: {latest_checkpoint}")
+
+        # Load merger weights if they exist
+        merger_weights_path = pathlib.Path(latest_checkpoint) / "merger_weights.bin"
+        if merger_weights_path.exists() and not training_args.freeze_merger:
+            rank0_print(f"Loading merger weights from {merger_weights_path}")
+            merger_weights = torch.load(merger_weights_path, map_location="cpu")
+
+            # Load merger weights into model
+            missing_keys = []
+            for name, param in model.named_parameters():
+                if name in merger_weights:
+                    param.data.copy_(merger_weights[name])
+                elif "merger" in name and param.requires_grad:
+                    missing_keys.append(name)
+
+            if missing_keys:
+                rank0_print(f"WARNING: {len(missing_keys)} merger parameters not found in checkpoint")
+            else:
+                rank0_print(f"Successfully loaded {len(merger_weights)} merger parameters")
+
+        trainer.train(resume_from_checkpoint=latest_checkpoint)
     else:
         trainer.train()
 
@@ -280,15 +448,29 @@ def train():
             model.named_parameters(), training_args.lora_bias
         )
 
-        non_lora_state_dict = get_peft_state_non_lora_maybe_zero_3(
-            model.named_parameters(), require_grad_only=True
-        )
-
         if local_rank == 0 or local_rank == -1:
             model.config.save_pretrained(training_args.output_dir)
             model.save_pretrained(training_args.output_dir, state_dict=state_dict)
             processor.save_pretrained(training_args.output_dir)
-            torch.save(non_lora_state_dict, os.path.join(training_args.output_dir, "non_lora_state_dict.bin"))
+
+            # Save merger weights separately (much smaller than full non_lora_state_dict)
+            if not training_args.freeze_merger:
+                from src.trainer.sft_trainer import maybe_zero_3
+                merger_weights = {}
+                for name, param in model.named_parameters():
+                    if "merger" in name and param.requires_grad:
+                        merger_weights[name] = maybe_zero_3(param, ignore_status=True, name=name)
+                if merger_weights:
+                    torch.save(merger_weights, os.path.join(training_args.output_dir, "merger_weights.bin"))
+                    rank0_print(f"Saved {len(merger_weights)} merger parameters to final checkpoint")
+
+            # Only save full non_lora_state_dict if explicitly enabled
+            # This file is very large (~500MB) and usually not needed
+            if getattr(training_args, 'save_non_lora_weights', False):
+                non_lora_state_dict = get_peft_state_non_lora_maybe_zero_3(
+                    model.named_parameters(), require_grad_only=True
+                )
+                torch.save(non_lora_state_dict, os.path.join(training_args.output_dir, "non_lora_state_dict.bin"))
     else:
         safe_save_model_for_hf_trainer(trainer, output_dir=training_args.output_dir)
 

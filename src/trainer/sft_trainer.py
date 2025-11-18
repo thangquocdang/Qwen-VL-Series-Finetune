@@ -143,16 +143,42 @@ class QwenSFTTrainer(Trainer):
 
         # Save model checkpoint
         if self.args.lora_enable:
-            checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}"
+            # Use fixed folder name if save_latest_only is enabled (saves disk space)
+            if getattr(self.args, 'save_latest_only', False):
+                checkpoint_folder = "checkpoint-latest"
+            else:
+                checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}"
 
             if self.hp_search_backend is None and trial is None:
                 self.store_flos()
 
             run_dir = self._get_output_dir(trial=trial)
             output_dir = os.path.join(run_dir, checkpoint_folder)
+
+            # If save_latest_only, remove old checkpoint first to save space
+            if getattr(self.args, 'save_latest_only', False) and os.path.exists(output_dir):
+                import shutil
+                logger.info(f"Removing old checkpoint to save disk space: {output_dir}")
+                shutil.rmtree(output_dir, ignore_errors=True)
+
             self.save_model(output_dir, _internal_call=True)
-            non_lora_weights = get_peft_state_non_lora_maybe_zero_3(self.model.named_parameters(), require_grad_only=False)
-            torch.save(non_lora_weights, os.path.join(output_dir, "non_lora_state_dict.bin"))
+
+            # Save non-LoRA trainable weights (e.g., merger) separately
+            # This is much smaller (~20MB) than full non_lora_state_dict (~500MB) and needed for resume
+            if not self.args.freeze_merger:
+                merger_weights = {}
+                for name, param in self.model.named_parameters():
+                    if "merger" in name and param.requires_grad:
+                        merger_weights[name] = maybe_zero_3(param, ignore_status=True, name=name)
+                if merger_weights and self.args.should_save:
+                    torch.save(merger_weights, os.path.join(output_dir, "merger_weights.bin"))
+                    logger.info(f"Saved {len(merger_weights)} merger parameters")
+
+            # Only save full non_lora_state_dict if explicitly enabled
+            # This file is very large (~500MB) and usually not needed
+            if getattr(self.args, 'save_non_lora_weights', False):
+                non_lora_weights = get_peft_state_non_lora_maybe_zero_3(self.model.named_parameters(), require_grad_only=False)
+                torch.save(non_lora_weights, os.path.join(output_dir, "non_lora_state_dict.bin"))
 
             if self.args.save_strategy in [SaveStrategy.STEPS, SaveStrategy.EPOCH] and self.state.best_global_step:
                 best_checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-{self.state.best_global_step}"
