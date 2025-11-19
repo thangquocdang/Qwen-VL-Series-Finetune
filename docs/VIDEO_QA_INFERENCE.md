@@ -2,6 +2,11 @@
 
 Guide for running inference on video multiple-choice QA datasets.
 
+**IMPORTANT**: This script matches the training data format, which uses:
+- `<video>` tag in prompt
+- Reasoning format: "1. QUAN SÁT: ... 2. KẾT LUẬN: ... 4. Đáp án: X"
+- The model will output reasoning before the answer
+
 ## Input Format
 
 Your JSON file should follow this format:
@@ -136,16 +141,23 @@ print("✅ Model loaded!")
 
 # ========== Helper Functions ==========
 def format_prompt(question, choices):
-    prompt = f"Câu hỏi: {question}\n\n"
+    """Match training format with <video> tag"""
+    prompt = f"<video>\n{question}\n\n"
     for choice in choices:
         prompt += f"{choice}\n"
-    prompt += "\nTrả lời chỉ một chữ cái (A, B, C, hoặc D):"
-    return prompt
+    return prompt.rstrip()
 
 def extract_answer(response):
+    """Extract answer from training format (Đáp án: X)"""
+    # First: Extract from "Đáp án: X" format
+    match = re.search(r'(?:Đáp án|đáp án)[:\s]+([ABCD])', response, re.IGNORECASE)
+    if match:
+        return match.group(1).upper()
+    # Second: Find standalone A/B/C/D
     match = re.search(r'\b([ABCD])\b', response.upper())
     if match:
         return match.group(1)
+    # Third: Check start
     if response.strip().upper()[0] in 'ABCD':
         return response.strip().upper()[0]
     return "A"
@@ -173,7 +185,7 @@ def predict(video_path, question, choices):
     ).to("cuda")
 
     with torch.no_grad():
-        outputs = model.generate(**inputs, max_new_tokens=128, do_sample=False)
+        outputs = model.generate(**inputs, max_new_tokens=256, do_sample=False)  # Allow reasoning
 
     generated = [out[len(inp):] for inp, out in zip(inputs.input_ids, outputs)]
     response = processor.batch_decode(generated, skip_special_tokens=True)[0]
@@ -250,15 +262,40 @@ print(f"Response: {response}")
 
 ## Features
 
+### Training Format Matching
+
+The inference script **matches the training data format**:
+
+**Training format:**
+```
+<video>
+Nếu xe ô tô đang chạy ở làn ngoài cùng bên phải trong video này thì xe đó chỉ được phép rẽ phải?
+
+A. Đúng
+B. Sai
+```
+
+**Model output (training format):**
+```
+1. QUAN SÁT: Làn ngoài cùng bên phải có mũi tên màu trắng chỉ hướng đi thẳng và rẽ phải.
+2. KẾT LUẬN: Xe ở làn này không chỉ được phép rẽ phải mà còn được đi thẳng.
+4. Đáp án: B. Sai
+```
+
+The script:
+1. Formats prompt with `<video>` tag (matches training)
+2. Allows model to generate reasoning (256 tokens)
+3. Extracts final answer from "Đáp án: X" format
+
 ### Answer Extraction
 
 The script automatically extracts A/B/C/D from various response formats:
 
+- `"4. Đáp án: B. Sai"` → B (training format)
+- `"Đáp án: A"` → A
+- `"1. QUAN SÁT: ...\n4. Đáp án: C"` → C
 - `"A"` → A
 - `"The answer is B"` → B
-- `"C. Đường Đỗ Xuân Hợp"` → C
-- `"Đáp án là D vì..."` → D
-- `"Tôi nghĩ câu trả lời là A"` → A
 
 ### Error Handling
 

@@ -58,19 +58,25 @@ print("✅ Model ready!\n")
 
 # ========== Helper Functions ==========
 def format_prompt(question, choices):
-    """Format question and choices"""
-    prompt = f"Câu hỏi: {question}\n\n"
+    """Format question and choices - MATCHES TRAINING FORMAT"""
+    # Match training format: <video> tag + question + choices
+    prompt = f"<video>\n{question}\n\n"
     for choice in choices:
         prompt += f"{choice}\n"
-    prompt += "\nTrả lời chỉ một chữ cái (A, B, C, hoặc D):"
-    return prompt
+    return prompt.rstrip()
 
 
 def extract_answer(response):
-    """Extract A/B/C/D from response"""
+    """Extract A/B/C/D from response - handles training format"""
+    # First: Extract from "Đáp án: X" format (training format)
+    match = re.search(r'(?:Đáp án|đáp án)[:\s]+([ABCD])', response, re.IGNORECASE)
+    if match:
+        return match.group(1).upper()
+    # Second: Find standalone A/B/C/D
     match = re.search(r'\b([ABCD])\b', response.upper())
     if match:
         return match.group(1)
+    # Third: Check if starts with A/B/C/D
     response_upper = response.strip().upper()
     if response_upper and response_upper[0] in 'ABCD':
         return response_upper[0]
@@ -101,7 +107,7 @@ def predict(video_path, question, choices):
     ).to("cuda")
 
     with torch.no_grad():
-        outputs = model.generate(**inputs, max_new_tokens=128, do_sample=False)
+        outputs = model.generate(**inputs, max_new_tokens=256, do_sample=False)  # Allow reasoning
 
     generated = [out[len(inp):] for inp, out in zip(inputs.input_ids, outputs)]
     response = processor.batch_decode(generated, skip_special_tokens=True)[0]

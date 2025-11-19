@@ -94,47 +94,52 @@ def load_model(checkpoint_path, base_model="Qwen/Qwen2-VL-2B-Instruct", device="
 
 def format_prompt(question, choices):
     """
-    Format question and choices into prompt
+    Format question and choices into prompt - MATCHES TRAINING FORMAT
 
-    Example output:
-        Câu hỏi: Theo trong video, nếu ô tô đi hướng chếch sang phải là hướng vào đường nào?
+    Example output (matches training data):
+        <video>
+        Theo trong video, nếu ô tô đi hướng chếch sang phải là hướng vào đường nào?
 
         A. Không có thông tin
         B. Dầu Giây Long Thành
         C. Đường Đỗ Xuân Hợp
         D. Xa Lộ Hà Nội
-
-        Trả lời chỉ một chữ cái (A, B, C, hoặc D):
     """
-    prompt = f"Câu hỏi: {question}\n\n"
+    # Match training format: <video> tag + question + choices
+    prompt = f"<video>\n{question}\n\n"
     for choice in choices:
         prompt += f"{choice}\n"
-    prompt += "\nTrả lời chỉ một chữ cái (A, B, C, hoặc D):"
-    return prompt
+    return prompt.rstrip()  # Remove trailing newline
 
 
 def extract_answer(response):
     """
     Extract answer letter (A/B/C/D) from model response
 
-    Examples:
+    Examples (matches training format):
+        "4. Đáp án: B. Sai" → "B"
+        "Đáp án: A" → "A"
+        "1. QUAN SÁT: ...\n4. Đáp án: C" → "C"
         "A" → "A"
         "The answer is B" → "B"
-        "C. Đường Đỗ Xuân Hợp" → "C"
-        "Đáp án là D" → "D"
     """
-    # Try to find single letter A/B/C/D
+    # First priority: Extract from "Đáp án: X" format (training format)
+    match = re.search(r'(?:Đáp án|đáp án)[:\s]+([ABCD])', response, re.IGNORECASE)
+    if match:
+        return match.group(1).upper()
+
+    # Second priority: Find standalone A/B/C/D
     match = re.search(r'\b([ABCD])\b', response.upper())
     if match:
         return match.group(1)
 
-    # If not found, try to find at the beginning
+    # Third priority: Check if starts with A/B/C/D
     response_upper = response.strip().upper()
     if response_upper and response_upper[0] in 'ABCD':
         return response_upper[0]
 
     # Default fallback
-    print(f"  ⚠️  Could not extract answer from: {response[:50]}...")
+    print(f"  ⚠️  Could not extract answer from: {response[:100]}...")
     return "A"  # Default to A if can't parse
 
 
@@ -181,10 +186,11 @@ def predict_video_qa(model, processor, video_path, question, choices, device="cu
     ).to(device)
 
     # Generate
+    # Allow longer generation for reasoning (training format includes QUAN SÁT, KẾT LUẬN, Đáp án)
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=128,  # Short response for A/B/C/D
+            max_new_tokens=256,  # Allow reasoning + answer (training format)
             do_sample=False  # Greedy for reproducibility
         )
 
