@@ -34,64 +34,9 @@ OUTPUT_DIR = "/result"
 OUTPUT_FILE = f"{OUTPUT_DIR}/submission.csv"
 SEED = 42
 
-# Optional: Download checkpoint from HuggingFace if not exists locally
-# Set this to your HuggingFace repo ID (e.g., "thangquoc/zaic2025-phase2")
-# Leave as None to use local checkpoint only (recommended for competition)
-HUGGINGFACE_REPO_ID = os.environ.get("HF_CHECKPOINT_REPO", None)
-
-
-# ========== Download Checkpoint from HuggingFace (Optional) ==========
-def download_checkpoint_if_needed(checkpoint_path, repo_id=None):
-    """
-    Download checkpoint from HuggingFace if local checkpoint doesn't exist
-
-    Args:
-        checkpoint_path: Local path to checkpoint
-        repo_id: HuggingFace repo ID (e.g., "username/repo-name")
-
-    Returns:
-        Path to checkpoint (either local or downloaded)
-    """
-    checkpoint_path = Path(checkpoint_path)
-
-    # Check if local checkpoint exists
-    if checkpoint_path.exists():
-        print(f"✓ Using local checkpoint: {checkpoint_path}")
-        return checkpoint_path
-
-    # If no repo_id provided, fail
-    if not repo_id:
-        raise FileNotFoundError(
-            f"Checkpoint not found at {checkpoint_path} and no HuggingFace repo specified.\n"
-            f"Either:\n"
-            f"  1. Copy checkpoint to {checkpoint_path}, or\n"
-            f"  2. Set HF_CHECKPOINT_REPO environment variable to download from HuggingFace"
-        )
-
-    # Download from HuggingFace
-    print(f"⚠️  Local checkpoint not found at {checkpoint_path}")
-    print(f"Downloading checkpoint from HuggingFace: {repo_id}")
-    print("This may take a few minutes...")
-
-    try:
-        from huggingface_hub import snapshot_download
-
-        downloaded_path = snapshot_download(
-            repo_id=repo_id,
-            local_dir=str(checkpoint_path),
-            token=os.environ.get("HF_TOKEN")  # Optional: for private repos
-        )
-
-        print(f"✓ Checkpoint downloaded to: {checkpoint_path}")
-        return Path(downloaded_path)
-
-    except ImportError:
-        raise ImportError(
-            "huggingface_hub is required to download checkpoints.\n"
-            "Install with: pip install huggingface_hub"
-        )
-    except Exception as e:
-        raise RuntimeError(f"Failed to download checkpoint from HuggingFace: {e}")
+# IMPORTANT: BTC inference environment has NO INTERNET
+# "không dùng API ngoài, vì inference sẽ không có internet"
+# All models and checkpoints must be included in Docker image
 
 
 # ========== Set Seed for Reproducibility ==========
@@ -222,13 +167,10 @@ def main():
     # Create output directory
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # Download checkpoint from HuggingFace if needed
-    checkpoint_path = download_checkpoint_if_needed(CHECKPOINT_PATH, HUGGINGFACE_REPO_ID)
-
     # Timing: Load model
     print("\n[1/3] Loading model and resources...")
     t_load_start = time.time()
-    model, processor = load_model(checkpoint_path)
+    model, processor = load_model(CHECKPOINT_PATH)
     t_load_end = time.time()
     load_time = t_load_end - t_load_start
     print(f"⏱️  Model load time: {load_time:.2f} seconds ({load_time*1000:.0f} ms)\n")

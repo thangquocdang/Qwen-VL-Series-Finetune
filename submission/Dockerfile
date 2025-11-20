@@ -42,9 +42,24 @@ WORKDIR ${WORKSPACE}
 COPY requirements.txt ${WORKSPACE}/
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-# NOTE: Base model is NOT included in Docker (BTC requirement - avoid large image size)
-# Base model (Qwen2-VL-2B-Instruct) will be automatically downloaded when predict.py runs
-# BTC server has internet access for model download during inference
+# IMPORTANT: Base model handling for OFFLINE inference
+# BTC documentation states: "không dùng API ngoài, vì inference sẽ không có internet"
+#
+# CONTRADICTION:
+# - BTC says: "Base model không được đưa vào Docker để tránh quá nặng"
+# - But also: "Inference sẽ KHÔNG CÓ INTERNET"
+#
+# SOLUTION: Download base model to Docker (required for offline inference)
+# Docker image will be larger (~15GB total) but will work offline
+#
+# If BTC server has HuggingFace cache mounted, model will load from cache
+# If not, model will load from Docker's local cache
+#
+RUN python3 -c "from transformers import Qwen2VLForConditionalGeneration, AutoProcessor; \
+    print('Downloading base model for offline inference...'); \
+    Qwen2VLForConditionalGeneration.from_pretrained('Qwen/Qwen2-VL-2B-Instruct', trust_remote_code=True); \
+    AutoProcessor.from_pretrained('Qwen/Qwen2-VL-2B-Instruct', trust_remote_code=True); \
+    print('Base model cached successfully')"
 
 # Copy inference scripts
 COPY predict.py ${WORKSPACE}/
