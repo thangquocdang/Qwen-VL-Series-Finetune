@@ -42,11 +42,9 @@ WORKDIR ${WORKSPACE}
 COPY requirements.txt ${WORKSPACE}/
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-# Install base model (Qwen2-VL-2B-Instruct)
-# Note: This will be downloaded during first run if not cached
-RUN python3 -c "from transformers import AutoModelForCausalLM; \
-    print('Downloading base model...'); \
-    AutoModelForCausalLM.from_pretrained('Qwen/Qwen2-VL-2B-Instruct', trust_remote_code=True)"
+# NOTE: Base model is NOT included in Docker (BTC requirement - avoid large image size)
+# Base model (Qwen2-VL-2B-Instruct) will be automatically downloaded when predict.py runs
+# BTC server has internet access for model download during inference
 
 # Copy inference scripts
 COPY predict.py ${WORKSPACE}/

@@ -1,10 +1,15 @@
 #!/bin/bash
 
-# start_jupyter.sh - Start Jupyter Notebook server for time measurement
+# start_jupyter.sh - Start Jupyter Lab server for time measurement
 # Usage: ./start_jupyter.sh
+#
+# Competition requirements (BTC):
+# - Port: 9777
+# - Password: zac2025
+# - Token: zac2025
 
 echo "=========================================="
-echo "Starting Jupyter Notebook Server"
+echo "Starting Jupyter Lab Server"
 echo "=========================================="
 echo ""
 
@@ -20,18 +25,20 @@ fi
 echo "✓ Notebook found: /workspace/predict_notebook.ipynb"
 echo ""
 
-# Start Jupyter with no authentication (for competition evaluation)
-echo "Starting Jupyter Notebook server..."
+# Start Jupyter Lab with BTC-required configuration
+echo "Starting Jupyter Lab server..."
+echo "  Port: 9777"
+echo "  Password: zac2025"
+echo "  Token: zac2025"
 echo ""
 
-jupyter notebook \
-    --ip=0.0.0.0 \
-    --port=8888 \
-    --no-browser \
+jupyter lab \
+    --port 9777 \
+    --ip 0.0.0.0 \
+    --NotebookApp.password='zac2025' \
+    --NotebookApp.token='zac2025' \
     --allow-root \
-    --NotebookApp.token='' \
-    --NotebookApp.password='' \
-    --notebook-dir=/workspace
+    --no-browser
 
 echo ""
 echo "=========================================="
