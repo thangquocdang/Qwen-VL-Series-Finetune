@@ -408,16 +408,48 @@ def train():
         **data_module
     )
 
-    # Check for existing checkpoints
-    checkpoints = sorted(pathlib.Path(training_args.output_dir).glob("checkpoint-*"),
-                        key=lambda x: int(x.name.split("-")[1]))
+    # Determine checkpoint to resume from
+    # Priority: 1) --resume_from_checkpoint arg, 2) auto-detect in output_dir
+    resume_checkpoint = None
 
-    if checkpoints:
-        latest_checkpoint = str(checkpoints[-1])
-        rank0_print(f"Resuming from checkpoint: {latest_checkpoint}")
+    if training_args.resume_from_checkpoint is not None:
+        # User explicitly provided checkpoint path
+        resume_checkpoint = training_args.resume_from_checkpoint
+        if not pathlib.Path(resume_checkpoint).exists():
+            rank0_print(f"WARNING: --resume_from_checkpoint path does not exist: {resume_checkpoint}")
+            resume_checkpoint = None
+        else:
+            rank0_print(f"Using --resume_from_checkpoint: {resume_checkpoint}")
+
+    if resume_checkpoint is None:
+        # Auto-detect latest checkpoint in output_dir
+        checkpoints = sorted(pathlib.Path(training_args.output_dir).glob("checkpoint-*"),
+                            key=lambda x: int(x.name.split("-")[1]) if x.name.split("-")[1].isdigit() else 0)
+        if checkpoints:
+            resume_checkpoint = str(checkpoints[-1])
+            rank0_print(f"Auto-detected checkpoint in output_dir: {resume_checkpoint}")
+
+    # Resume training if checkpoint found
+    if resume_checkpoint:
+        rank0_print(f"Resuming training from: {resume_checkpoint}")
+
+        # Check if we're changing trainable parameters (incremental unfreezing)
+        # If so, we can't resume optimizer state (incompatible sizes)
+        weights_only_resume = False
+        if training_args.unfreeze_topk_llm > 0 or training_args.unfreeze_topk_vision > 0:
+            rank0_print("⚠️  Detected incremental unfreezing (unfreeze_topk_llm/vision > 0)")
+            rank0_print("   → Loading model weights only (LoRA + merger)")
+            rank0_print("   → Skipping optimizer/scheduler state (incompatible with new trainable params)")
+            weights_only_resume = True
+        elif not training_args.freeze_llm:
+            # Check if checkpoint has different freeze_llm setting
+            # This is a heuristic - if freeze_llm=False but checkpoint likely had freeze_llm=True
+            rank0_print("⚠️  freeze_llm=False: May be resuming from checkpoint with different trainable params")
+            rank0_print("   → Loading model weights only to avoid optimizer state mismatch")
+            weights_only_resume = True
 
         # Load merger weights if they exist
-        merger_weights_path = pathlib.Path(latest_checkpoint) / "merger_weights.bin"
+        merger_weights_path = pathlib.Path(resume_checkpoint) / "merger_weights.bin"
         if merger_weights_path.exists() and not training_args.freeze_merger:
             rank0_print(f"Loading merger weights from {merger_weights_path}")
             merger_weights = torch.load(merger_weights_path, map_location="cpu")
@@ -435,8 +467,69 @@ def train():
             else:
                 rank0_print(f"Successfully loaded {len(merger_weights)} merger parameters")
 
-        trainer.train(resume_from_checkpoint=latest_checkpoint)
+        # Load LoRA adapter weights if using weights-only resume
+        if weights_only_resume and training_args.lora_enable:
+            adapter_config_path = pathlib.Path(resume_checkpoint) / "adapter_config.json"
+            if adapter_config_path.exists():
+                rank0_print(f"Loading LoRA adapter weights from {resume_checkpoint}")
+                # Use PEFT's proper API to load adapter weights
+                from peft import set_peft_model_state_dict
+                from safetensors.torch import load_file
+
+                adapter_path = pathlib.Path(resume_checkpoint) / "adapter_model.safetensors"
+                if adapter_path.exists():
+                    adapter_weights = load_file(str(adapter_path))
+                    # PEFT expects state dict without "base_model.model." prefix
+                    set_peft_model_state_dict(model, adapter_weights)
+                    rank0_print(f"✓ Loaded LoRA adapter with {len(adapter_weights)} parameters")
+
+                    # Re-enable LoRA parameters (they may be frozen after loading)
+                    rank0_print("Re-enabling LoRA parameters after loading...")
+                    for name, param in model.named_parameters():
+                        if 'lora_' in name:
+                            param.requires_grad = True
+
+                    # Re-apply incremental unfreezing if needed
+                    if training_args.unfreeze_topk_llm > 0:
+                        rank0_print(f"Re-applying incremental unfreezing for top {training_args.unfreeze_topk_llm} LLM layers...")
+                        unfreeze_topk_layers(model, k_llm=training_args.unfreeze_topk_llm, k_vis=0)
+
+                    # Ensure merger stays trainable
+                    if not training_args.freeze_merger:
+                        rank0_print("Re-enabling merger parameters...")
+                        merger_params = model.visual.merger.parameters()
+                        for p in merger_params:
+                            p.requires_grad = True
+                        if hasattr(model.visual, "deepstack_merger_list"):
+                            for p in model.visual.deepstack_merger_list.parameters():
+                                p.requires_grad = True
+
+                else:
+                    rank0_print(f"WARNING: LoRA adapter file not found at {adapter_path}")
+            else:
+                rank0_print(f"WARNING: LoRA adapter config not found at {adapter_config_path}")
+
+        # Verify trainable parameters after loading
+        if weights_only_resume:
+            trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            rank0_print(f"Verified: {trainable_count:,} trainable parameters after loading weights")
+
+            # Sample some trainable param names
+            trainable_names = [name for name, p in model.named_parameters() if p.requires_grad]
+            if trainable_names:
+                rank0_print(f"Sample trainable params: {trainable_names[:5]}")
+            else:
+                rank0_print("⚠️  WARNING: NO trainable parameters found! This will cause training to fail.")
+
+        # Resume training
+        if weights_only_resume:
+            rank0_print("Starting training with loaded weights (fresh optimizer state)")
+            trainer.train()  # Don't pass resume_from_checkpoint to avoid loading optimizer
+        else:
+            rank0_print("Resuming training with full state (optimizer + scheduler + RNG)")
+            trainer.train(resume_from_checkpoint=resume_checkpoint)
     else:
+        rank0_print("Starting training from scratch (no checkpoint found)")
         trainer.train()
 
     trainer.save_state()

@@ -33,11 +33,15 @@ echo "Batch per Device: $BATCH_PER_DEVICE"
 echo "Gradient Accumulation: $GRAD_ACCUM_STEPS"
 echo "==========================================="
 
-# Copy checkpoint to new output directory for resume
-echo "Preparing checkpoint for resume..."
+# Verify checkpoint exists before training
+if [ ! -d "$RESUME_FROM" ]; then
+    echo "❌ ERROR: Checkpoint not found at $RESUME_FROM"
+    exit 1
+fi
+echo "✅ Checkpoint verified: $RESUME_FROM"
+
+# Create output directory
 mkdir -p "$OUTPUT_DIR"
-cp -r "$RESUME_FROM"/* "$OUTPUT_DIR/"
-echo "✅ Checkpoint copied"
 
 # Start training with UNFROZEN LLM
 deepspeed --num_gpus=$NUM_DEVICES src/train/train_sft.py \
@@ -45,7 +49,8 @@ deepspeed --num_gpus=$NUM_DEVICES src/train/train_sft.py \
     --deepspeed scripts/zero2.json \
     --model_id "$MODEL_NAME" \
     --seed 42 \
-    --resume_from_checkpoint "$OUTPUT_DIR" \
+    --data_seed 42 \
+    --resume_from_checkpoint "$RESUME_FROM" \
     --data_path /kaggle/input/600sample-real/llava_training_data.json \
     --image_folder /kaggle/input/train-zaic \
     --remove_unused_columns False \
