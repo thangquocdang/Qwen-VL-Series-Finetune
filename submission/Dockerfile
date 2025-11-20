@@ -9,7 +9,8 @@
 # - See NVIDIA_DOCKER_SETUP.md for installation instructions
 # - Run check_gpu_setup.sh to verify your environment
 #
-FROM nvidia/cuda:12.2.0-cudnn8-runtime-ubuntu22.04
+# BTC example: nvidia/cuda:12.2.0-devel-ubuntu22.04
+FROM nvidia/cuda:12.2.0-devel-ubuntu22.04
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
