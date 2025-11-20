@@ -1,0 +1,30 @@
+# Core dependencies for Zalo AI Challenge 2025 submission
+# Python 3.10+
+
+# Deep Learning
+torch==2.1.2
+torchvision==0.16.2
+transformers==4.47.1
+accelerate==1.2.1
+
+# PEFT for LoRA
+peft==0.14.0
+
+# Qwen-VL specific
+qwen-vl-utils==0.0.8
+
+# Video processing
+decord==0.6.0
+av==11.0.0
+
+# Utils
+safetensors==0.4.5
+pillow==10.2.0
+numpy==1.26.4
+pandas==2.2.0
+tqdm==4.67.1
+
+# Jupyter (for predict_notebook.ipynb)
+jupyter==1.0.0
+notebook==7.0.8
+ipywidgets==8.1.1
