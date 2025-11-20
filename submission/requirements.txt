@@ -13,6 +13,9 @@ peft==0.14.0
 # Qwen-VL specific
 qwen-vl-utils==0.0.8
 
+# HuggingFace Hub (for optional checkpoint download)
+huggingface_hub==0.26.2
+
 # Video processing
 decord==0.6.0
 av==11.0.0
