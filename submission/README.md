@@ -20,6 +20,44 @@ submission/
     └── checkpoint-latest/
 ```
 
+## ⚠️ Prerequisites: NVIDIA Docker Setup
+
+**QUAN TRỌNG**: Để sử dụng GPU trong Docker, bạn cần cài đặt **NVIDIA Docker** (nvidia-docker2).
+
+### Yêu cầu môi trường (matching BTC server):
+- **Driver Version**: ≥ 535.86.10
+- **CUDA Version**: 12.2
+
+### Cài đặt nhanh NVIDIA Docker:
+
+```bash
+# Ubuntu/Debian
+sudo apt-get update
+sudo apt-get install -y nvidia-docker2
+sudo systemctl restart docker
+
+# Test GPU access
+docker run --rm --gpus all nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi
+```
+
+### Kiểm tra môi trường tự động:
+
+```bash
+cd submission
+bash check_gpu_setup.sh
+```
+
+Script sẽ kiểm tra:
+- ✅ NVIDIA Driver (≥ 535.86.10)
+- ✅ CUDA Version (12.2)
+- ✅ Docker installed
+- ✅ NVIDIA Docker working
+- ✅ GPU accessible in Docker
+
+**📖 Xem chi tiết**: [NVIDIA_DOCKER_SETUP.md](NVIDIA_DOCKER_SETUP.md) - Hướng dẫn đầy đủ và troubleshooting
+
+---
+
 ## 🚀 Quick Start
 
 ### 1. Copy Your Checkpoint

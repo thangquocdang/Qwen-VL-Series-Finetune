@@ -1,6 +1,15 @@
 # Dockerfile for Zalo AI Challenge 2025 - RoadBuddy
-# Base image with CUDA support
-FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+#
+# IMPORTANT: This Dockerfile matches BTC server environment:
+# - Driver Version: 535.86.10
+# - CUDA Version: 12.2
+#
+# Prerequisites:
+# - NVIDIA Docker (nvidia-docker2) must be installed on host
+# - See NVIDIA_DOCKER_SETUP.md for installation instructions
+# - Run check_gpu_setup.sh to verify your environment
+#
+FROM nvidia/cuda:12.2.0-cudnn8-runtime-ubuntu22.04
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive

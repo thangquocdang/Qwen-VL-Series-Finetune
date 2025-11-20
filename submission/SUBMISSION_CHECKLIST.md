@@ -31,6 +31,37 @@ submission/
 
 ## 🔧 Before Submission - Required Actions
 
+### 0. Setup NVIDIA Docker (REQUIRED FIRST!)
+
+**QUAN TRỌNG**: BTC yêu cầu môi trường cụ thể:
+- **Driver Version**: 535.86.10
+- **CUDA Version**: 12.2
+
+#### Kiểm tra nhanh:
+
+```bash
+cd submission
+bash check_gpu_setup.sh
+```
+
+**Nếu failed**, xem hướng dẫn chi tiết: [NVIDIA_DOCKER_SETUP.md](NVIDIA_DOCKER_SETUP.md)
+
+#### Cài đặt NVIDIA Docker:
+
+```bash
+# Ubuntu/Debian
+sudo apt-get update
+sudo apt-get install -y nvidia-docker2
+sudo systemctl restart docker
+
+# Test
+docker run --rm --gpus all nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi
+```
+
+**Kết quả mong đợi**: Thấy thông tin GPU và driver version 535.86.10, CUDA 12.2
+
+---
+
 ### 1. Copy Your Phase 2a Checkpoint
 
 ```bash
